@@ -1,13 +1,9 @@
-"""
-This module provides utilities for parsing and processing game titles, 
-primarily following the No-Intro naming convention. It includes functions 
-to extract regions, clean up titles, and normalize their structure.
-"""
 import re
-from utils.parse_utils import normalize_repeated_chars
+from models import Entry
+from utils import normalize_repeated_chars
 
-# Mapping of regions to their respective database region
 REGIONS_MAP = {
+    'World': '',
     'USA': 'us',
     'Canada': 'us',
     'Mexico': 'us',
@@ -52,27 +48,42 @@ REGIONS_MAP = {
     'Unknown': 'other'
 }
 
-# List of possible languages described in a title
-LANGUAGES = [
+LANGUAGES = (
     'En', 'Ja', 'Fr', 'De', 'Es', 'It', 'Nl', 'Pt', 'Sv', 'No', 'Da', 'Fi',
     'Zh', 'Ko', 'Pl', 'Ru', 'Cs', 'Hu', 'Zh-Hant', 'Zh-Hans', 'El', 'Es-XL',
-    'Pt-BR', 'Tr', 'En-GB', 'Ar', 'En+En', 'It+En', 'Ro', 'Af'
-]
+    'Pt-BR', 'Tr', 'En-GB', 'Ar', 'En+En', 'It+En', 'Ro', 'Af', 'Hr', 'Sk',
+    'Sl', 'Th', 'Mk', 'Id', 'Lt', 'Sr', 'Et', 'Lv', 'Sq', 'Bg', 'Pt-PT',
+    'Fr-CA', 'Fr+En', 'Uk', 'Gd', 'He', 'Hi', 'Hy', 'La', 'Vi', 'Ca', 'Kw'
+)
 
-# List of contents that are in parentheses to remove from titles
-TITLE_REMOVE_LIST = [
+TITLE_REMOVE_LIST = (
     'Europe', 'USA', 'Japan', 'World'
-] + LANGUAGES
+) + LANGUAGES
 
-# List of articles to handle in titles
-WORD_ARTICLES = [
-    'the', 'die', 'la', 'des', 'das', 'le', 'l\'', 'ein', 'der', 'het', 'el',
-    'il', 'i', 'los', 'os'
-]
+WORD_ARTICLES = (
+    # English
+    'the', 'a', 'an',
+    # German
+    'der', 'die', 'das', 'ein', 'eine',
+    # French
+    'le', 'la', 'les', 'l\'', 'un', 'une', 'des',
+    # Italian
+    'il', 'lo', 'i', 'gli', 'uno', 'una', 'un\'',
+    # Spanish
+    'el', 'los', 'las', 'unos', 'unas',
+    # Portuguese
+    'o', 'os', 'as', 'um', 'uma',
+    # Dutch
+    'de', 'het', 'een',
+    # Scandinavian
+    'en', 'et', 'den', 'det',
+    # Greek
+    'to', 'ta'
+)
 
 
 def parse_regions(title):
-    """Parse the regions from a title."""
+    """Extract known regions from a title."""
     # Extract all groups of parentheses from the title
     matches = re.findall(r"\((.*?)\)", title)
 
@@ -94,8 +105,7 @@ def parse_regions(title):
 
 
 def remove_groups_with_contents(title, contents_to_remove):
-    """Remove parentheses groups containing specific contents."""
-
+    """Remove parenthesized groups containing selected text."""
     # Construct a regex pattern to match parentheses groups containing any of the specified contents
     contents_pattern = '|'.join(contents_to_remove)
     pattern = rf"\((?:{contents_pattern})(?:,(?:{contents_pattern}))*\)"
@@ -104,20 +114,21 @@ def remove_groups_with_contents(title, contents_to_remove):
 
 
 def move_article(title):
-    """Move the article in a title to the beginning."""
+    """Move a trailing title article to the beginning."""
     # Match the title structure: main name, article, and optional extra info
-    match = re.match(r"^(.*?),\s*(\S+)(?:\s+(.*))?$", title)
+    match = re.match(r'^(.*?),\s*(\S+)(?:\s+(.*))?$', title)
 
     if match:
         name = match.group(1)
-
         # Avoid changes if the main name contains parentheses (to prevent false positives)
         if '(' in name:
             return title
 
         article = match.group(2)
-        other = match.group(3)
+        if article.lower() not in WORD_ARTICLES:
+            return title
 
+        other = match.group(3)
         # Construct the final title
         if other:
             if article.endswith("'"):
@@ -132,11 +143,12 @@ def move_article(title):
 
 
 def get_clean_title(title):
-    """Clean the title by removing unnecessary groups and normalizing it."""
+    """Remove unwanted groups and return a clean title with extras."""
     clean_title = title
+    extras = []
 
     # Extract all groups of parentheses from the title
-    matches = re.findall(r"\((.*?)\)", title)
+    matches = re.findall(r'\((.*?)\)', title)
 
     # Split the contents of each parentheses group into subgroups
     groups = [group.split(',') for group in matches]
@@ -153,35 +165,45 @@ def get_clean_title(title):
                 remove_group = False
                 break
         if remove_group:
+            for content in group:
+                content = content.strip()
+                if content not in REGIONS_MAP:
+                    extras.append(content)
             clean_title = remove_groups_with_contents(clean_title, group)
 
     # Normalize repeated spaces and move articles
     clean_title = normalize_repeated_chars(clean_title, ' ')
 
-    return clean_title
+    return clean_title, extras
 
 
-def process_entry(entry, parse_title_regions, clean_title_contents, move_title_article):
-    """Process a single entry by applying various transformations."""
-    if parse_title_regions:
-        if not entry.get('regions'):
-            entry['regions'] = parse_regions(entry['title'])
+class NoIntroParser:
+    def __init__(self, parse_title_regions=True, clean_title_contents=True, move_title_article=True, fallback=()):
+        """Create a No-Intro parser with title cleanup options and fallback fields."""
+        self.parse_title_regions = parse_title_regions
+        self.clean_title_contents = clean_title_contents
+        self.move_title_article = move_title_article
+        self.fallback = fallback
 
-    if clean_title_contents:
-        entry['title'] = get_clean_title(entry['title'])
+    def parse(self, source):
+        """Clean source titles and add parsed regions and extras."""
+        for entry in source.entries:
+            title = entry.title
+            regions = entry.regions
+            extras = []
 
-    if move_title_article:
-        entry['title'] = move_article(entry['title'])
+            if self.parse_title_regions:
+                regions = parse_regions(title)
+            if self.clean_title_contents:
+                title, extras = get_clean_title(title)
+            if self.move_title_article:
+                title = move_article(title)
 
+            new_entry = Entry(
+                title=title,
+                regions=regions
+            )
+            entry.merge(new_entry, fallback=self.fallback)
 
-def parse(entries, flags):
-    """Parse a list of entries and process each one."""
-    parse_title_regions = flags.get('parse_title_regions', True)
-    clean_title_contents = flags.get('clean_title_contents', True)
-    move_title_article = flags.get('move_title_article', True)
-
-    for entry in entries:
-        process_entry(entry, parse_title_regions,
-                      clean_title_contents, move_title_article)
-
-    return entries
+            for link in entry.links:
+                link.extras.extend(extras)

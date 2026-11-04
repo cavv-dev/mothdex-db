@@ -1,47 +1,43 @@
-"""
-This module provides functionality to parse and update entries based on ROM data 
-extracted from XML files in the MAME software directory.
-"""
 import os
 import xml.etree.ElementTree as ET
+from models import Entry
+from common import DATA_DIR
 
-# Directory containing XML files with MAME software data
-XMLS_DIR = 'data/mame/hash'
-
-# Global dictionary to store ROMs data
-roms = None
+database = None
 
 
-def load_roms():
-    """Load ROM data from XML files in the specified directory."""
-    global roms
-    roms = {}
+def load_database():
+    """Load MAME software names and descriptions."""
+    global database
+    database = {}
 
-    for filename in os.listdir(XMLS_DIR):
+    for filename in sorted(os.listdir(os.path.join(DATA_DIR, 'mame', 'hash'))):
         if not filename.endswith('.xml'):
             continue
 
-        filepath = os.path.join(XMLS_DIR, filename)
-
-        tree = ET.parse(filepath)
-        root = tree.getroot()
-
+        root = ET.parse(os.path.join(
+            DATA_DIR, 'mame', 'hash', filename)).getroot()
         for software in root.findall('software'):
             name = software.get('name')
-            description = software.find('description').text
-            roms[name] = description
+            description = software.findtext('description')
+            if name and description:
+                database.setdefault(name, description)
 
 
-def parse(entries, flags):
-    """Parse a list of entries and update their titles based on ROM data."""
-    if not roms:
-        load_roms()
+class MAMEParser:
+    def __init__(self, fallback=()):
+        """Create a MAME parser with fallback fields."""
+        self.fallback = fallback
 
-    for entry in entries:
-        # Check if the entry's title matches a ROM name
-        if entry['title'] in roms:
-            entry['rom_id'] = entry['title']
-            # Update the title with the ROM description
-            entry['title'] = roms[entry['title']]
+    def parse(self, source):
+        """Replace MAME short names with database descriptions."""
+        if database is None:
+            load_database()
 
-    return entries
+        for entry in source.entries:
+            description = database.get(entry.title)
+            if not description:
+                continue
+
+            new_entry = Entry(title=description, serial=entry.title)
+            entry.merge(new_entry, fallback=self.fallback)

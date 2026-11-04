@@ -1,8 +1,7 @@
-/venv/
+/.venv/
 /config.json
 /cache/
 /data/
-/static/
-/scrapers/internet_archive_creds.json
+/temp/
 /*.db
 __pycache__/

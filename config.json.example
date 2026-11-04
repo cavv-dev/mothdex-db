@@ -1,3 +1,7 @@
 {
-    "static_files_dir_path": "/path/to/static/files"
+    "proxy_dir": "path/to/proxy",
+    "static_files_dir": "path/to/static/files",
+    "torrent_map_secret_key": "hahaha",
+    "igdb_client_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "igdb_client_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 }

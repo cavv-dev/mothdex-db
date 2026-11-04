@@ -1,44 +1,24 @@
-"""
-This module provides functionality for parsing game data from GameTDB XML files, 
-retrieving box art URLs, and enriching game entries with additional metadata. 
-It includes utilities for caching box art URLs, mapping game types and regions 
-to platforms, and validating box art URLs.
-"""
-import re
 import json
-import requests
+import re
+import os
 import xml.etree.ElementTree as ET
-from utils.parse_utils import create_search_key
+import requests
+from models import Entry
+from utils import Cacher
+from common import DATA_DIR
 
-# Global cache for box art URLs
-boxart_urls_cache = None
 
-CACHE_DIRNAME = 'cache'
-BOXART_URLS_CACHE_FILENAME = 'boxart_urls.json'
+XML_FILENAMES = ('dstdb.xml', 'wiitdb.xml', '3dstdb.xml',
+                 'wiiutdb.xml', 'ps3tdb.xml')
 
-# List of XML filenames containing game data
-XML_FILENAMES = [
-    'dstdb.xml',
-    'wiitdb.xml',
-    '3dstdb.xml',
-    'wiiutdb.xml',
-    'ps3tdb.xml'
-]
-
-# Mapping of platforms to their respective XML files
-PLATFORM_XML_MAP = {
-    'nds': 'dstdb.xml',
-    'dsi': 'dstdb.xml',
-    'wii': 'wiitdb.xml',
-    'gc': 'wiitdb.xml',
-    '3ds': '3dstdb.xml',
-    'n3ds': '3dstdb.xml',
-    'wiiu': 'wiiutdb.xml',
-    'ps3': 'ps3tdb.xml'
+PLATFORM_XML = {
+    'nds': 'dstdb.xml', 'dsi': 'dstdb.xml',
+    'wii': 'wiitdb.xml', 'gc': 'wiitdb.xml',
+    '3ds': '3dstdb.xml', 'n3ds': '3dstdb.xml',
+    'wiiu': 'wiiutdb.xml', 'ps3': 'ps3tdb.xml'
 }
 
-# Mapping of game types to platforms for each XML file
-TYPE_PLATFORM_MAP = {
+TYPE_PLATFORM = {
     'dstdb.xml': {
         'DS': 'nds',
         'DSi': 'dsi',
@@ -46,21 +26,11 @@ TYPE_PLATFORM_MAP = {
         'CUSTOM': 'nds'
     },
     'wiitdb.xml': {
-        'WiiWare': 'wii',
-        'VC-NES': 'wii',
-        'VC-SNES': 'wii',
-        'VC-N64': 'wii',
-        'VC-SMS': 'wii',
-        'VC-MD': 'wii',
-        'VC-PCE': 'wii',
-        'VC-NEOGEO': 'wii',
-        'VC-Arcade': 'wii',
-        'VC-C64': 'wii',
-        'VC-MSX': 'wii',
-        'Channel': 'wii',
         'GameCube': 'gc',
+        'CUSTOM': 'wii',
         'Homebrew': 'wii',
-        'CUSTOM': 'wii'
+        'WiiWare': 'wii',
+        'Channel': 'wii'
     },
     '3dstdb.xml': {
         '3DS': '3ds',
@@ -68,24 +38,12 @@ TYPE_PLATFORM_MAP = {
         '3DSWare': '3ds',
         'New3DS': 'n3ds',
         'New3DSWare': 'n3ds',
-        'VC-NES': '3ds',
-        'VC-GB': '3ds',
-        'VC-GBC': '3ds',
-        'VC-GBA': '3ds',
-        'VC-GG': '3ds',
-        'CUSTOM': '3ds',
-        'Homebrew': '3ds'
+        'Homebrew': '3ds',
+        'CUSTOM': '3ds'
     },
     'wiiutdb.xml': {
         'WiiU': 'wiiu',
         'eShop': 'wiiu',
-        'VC-NES': 'wiiu',
-        'VC-SNES': 'wiiu',
-        'VC-N64': 'wiiu',
-        'VC-GBA': 'wiiu',
-        'VC-DS': 'wiiu',
-        'VC-PCE': 'wiiu',
-        'VC-MSX': 'wiiu',
         'Channel': 'wiiu',
         'CUSTOM': 'wiiu'
     },
@@ -97,8 +55,7 @@ TYPE_PLATFORM_MAP = {
     }
 }
 
-# Mapping of regions to database region codes
-REGION_REGION_MAP = {
+REGION_MAP = {
     'NTSC-U': 'us',
     'NTSC-J': 'jp',
     'PAL': 'eu',
@@ -108,113 +65,26 @@ REGION_REGION_MAP = {
     'NTSC-A': 'other'
 }
 
-# Patterns for capturing region codes in game IDs
-ID_REGION_CODE_PATTERN_MAP = {
-    'dstdb.xml': '.{3}(.)',
-    'wiitdb.xml': '.{3}(.)',
-    '3dstdb.xml': '.{3}(.)',
-    'wiiutdb.xml': '.{3}(.)',
-    'ps3tdb.xml': '([A-Z]{4})'
+REGION_CODE_PATTERNS = {
+    'dstdb.xml': r'.{3}(.)',
+    'wiitdb.xml': r'.{3}(.)',
+    '3dstdb.xml': r'.{3}(.)',
+    'wiiutdb.xml': r'.{3}(.)',
+    'ps3tdb.xml': r'([A-Z]{4})'
 }
 
-# List of supported countries for GameTDB artwork
-GAMETDB_COUNTRIES = [
-    'US', 'EN', 'JA', 'FR', 'DE', 'ES', 'IT', 'NL', 'PT', 'NO', 'FI', 'SE',
-    'ZH', 'KO', 'RU', 'AU', 'DK', 'other'
-]
-
-# Mapping of region codes to countries for each XML file
-REGION_CODE_COUNTRY_MAP = {
-    'dstdb.xml': {
-        r"E": 'US',
-        r"J": 'JA',
-        r"K": 'KO',
-        r"D": 'DE',
-        r"F": 'FR',
-        r"H": 'NL',
-        r"I": 'IT',
-        r"S": 'ES',
-        r"Z": 'SE',
-        r"N": 'NO',
-        r"Q": 'DK',
-        r"M": 'SE',
-        r"G": 'GR',
-        r"T": 'US',
-        r"": 'EN'
-    },
-    'wiitdb.xml': {
-        r"E": 'US',
-        r"J": 'JA',
-        r"D": 'DE',
-        r"F": 'FR',
-        r"S": 'ES',
-        r"M": 'SE',
-        r"Y": 'DE',
-        r"K": 'KO',
-        r"H": 'NL',
-        r"I": 'IT',
-        r"Z": 'ES',
-        r"": 'EN'
-    },
-    '3dstdb.xml': {
-        r"J": 'JA',
-        r"E": 'US',
-        r"K": 'KO',
-        r"D": 'DE',
-        r"W": 'ZH',
-        r"I": 'IT',
-        r"H": 'NL',
-        r"V": 'IT',
-        r"": 'EN'
-    },
-    'wiiutdb.xml': {
-        r"E": 'US',
-        r"J": 'JA',
-        r"R": 'RU',
-        r"A": 'JA',
-        r"": 'EN'
-    },
-    'ps3tdb.xml': {
-        r"BCAS": 'ZH',
-        r"BCAX": 'JA',
-        r"BCJB": 'JA',
-        r"BCJN": 'JA',
-        r"BCJS": 'JA',
-        r"BCJX": 'JA',
-        r"BCKS": 'KO',
-        r"BCUS": 'US',
-        r"BLAS": 'ZH',
-        r"BLJB": 'JA',
-        r"BLJM": 'JA',
-        r"BLJS": 'JA',
-        r"BLKS": 'KO',
-        r"BLMJ": 'JA',
-        r"BLUS": 'US',
-        r"CPCS": 'JA',
-        r"HOP3": 'JA',
-        r"KTGS": 'JA',
-        r"XCUS": 'US',
-        r"..J.": 'JA',
-        r"..U.": 'US',
-        r"..H.": 'US',
-        r"": 'EN'
-    }
+SERIAL_PATTERNS = {
+    'nds': r'(\w{4})',
+    'dsi': r'(\w{4})',
+    'wii': r'(\w{4})',
+    'gc': r'(\w{4})',
+    '3ds': r'(\w{4})',
+    'n3ds': r'(\w{4})',
+    'wiiu': r'(\w{6}|\w{4})',
+    'ps3': r'(\w{4}).*(\w{5})'
 }
 
-# Patterns for capturing GameTDB IDs in game serials
-SERIAL_GAMETDB_ID_PATTERN_MAP = {
-    'nds': r"(\w{4})",
-    'dsi': r"(\w{4})",
-    'wii': r"(\w{4})",
-    'gc': r"(\w{4})",
-    '3ds': r"(\w{4})",
-    'n3ds': r"(\w{4})",
-    'wiiu': r"(\w{6}|\w{4})",
-    'ps3': r"(\w{4}).*(\w{5})"
-}
-
-# Mapping of platform paths for building box art URLs
-BOXART_URL_PLATFORM_PATHS_MAP = {
+ARTWORK_PATHS = {
     'nds': 'ds/coverS',
     'dsi': 'ds/coverS',
     'wii': 'wii/cover',
@@ -225,215 +95,245 @@ BOXART_URL_PLATFORM_PATHS_MAP = {
     'ps3': 'ps3/cover'
 }
 
-# Base URL for GameTDB artwork
-GAMETDB_ARTWORK_BASE_URL = 'https://art.gametdb.com'
+REGION_COUNTRIES = {
+    'dstdb.xml': {
+        'E': 'US',
+        'J': 'JA',
+        'K': 'KO',
+        'D': 'DE',
+        'F': 'FR',
+        'H': 'NL',
+        'I': 'IT',
+        'S': 'ES',
+        'Z': 'SE',
+        'N': 'NO',
+        'Q': 'DK',
+        'M': 'SE',
+        'G': 'GR',
+        'T': 'US',
+        '': 'EN'
+    },
+    'wiitdb.xml': {
+        'E': 'US',
+        'J': 'JA',
+        'D': 'DE',
+        'F': 'FR',
+        'S': 'ES',
+        'M': 'SE',
+        'Y': 'DE',
+        'K': 'KO',
+        'H': 'NL',
+        'I': 'IT',
+        'Z': 'ES',
+        '': 'EN'
+    },
+    '3dstdb.xml': {
+        'J': 'JA',
+        'E': 'US',
+        'K': 'KO',
+        'D': 'DE',
+        'W': 'ZH',
+        'I': 'IT',
+        'H': 'NL',
+        'V': 'IT',
+        '': 'EN'
+    },
+    'wiiutdb.xml': {
+        'E': 'US',
+        'J': 'JA',
+        'R': 'RU',
+        'A': 'JA',
+        '': 'EN'
+    },
+    'ps3tdb.xml': {
+        'BCAS': 'ZH',
+        'BCAX': 'JA',
+        'BCJB': 'JA',
+        'BCJN': 'JA',
+        'BCJS': 'JA',
+        'BCJX': 'JA',
+        'BCKS': 'KO',
+        'BCUS': 'US',
+        'BLAS': 'ZH',
+        'BLJB': 'JA',
+        'BLJM': 'JA',
+        'BLJS': 'JA',
+        'BLKS': 'KO',
+        'BLMJ': 'JA',
+        'BLUS': 'US',
+        'CPCS': 'JA',
+        'HOP3': 'JA',
+        'KTGS': 'JA',
+        'XCUS': 'US',
+        '..J.': 'JA',
+        '..U.': 'US',
+        '..H.': 'US',
+        '': 'EN'
+    }
+}
 
-# Global variable to store parsed TDB data
-tdbs = None
+COUNTRIES = ('US', 'EN', 'JA', 'FR', 'DE', 'ES', 'IT', 'NL', 'PT',
+             'NO', 'FI', 'SE', 'ZH', 'KO', 'RU', 'AU', 'DK', 'other')
+ARTWORK_BASE_URL = 'https://art.gametdb.com'
+
+artwork_cacher = Cacher('gametdb_artwork')
+matches_cacher = Cacher('gametdb_matches')
+databases = None
+session = requests.Session()
 
 
-def load_tdbs():
-    """Load TDB data from XML files into memory."""
-    global tdbs
-    tdbs = {}
+def create_search_key(name):
+    """Normalize a GameTDB name for matching."""
+    name = re.sub(r'\(.*', '', name or '')
+    return re.sub(r'[^a-z0-9]', '', name.lower())
 
-    for xml_filename in XML_FILENAMES:
-        tree = ET.parse(f'data/gametdb/{xml_filename}')
-        root = tree.getroot()
 
-        tdbs[xml_filename] = []
+def load_databases():
+    """Load GameTDB XML data into memory."""
+    global databases
+    if databases is not None:
+        return
 
+    databases = {}
+    for filename in XML_FILENAMES:
+        games = []
+        by_id = {}
+        root = ET.parse(os.path.join(DATA_DIR, 'gametdb', filename)).getroot()
         for game in root.findall('game'):
-            tdbs[xml_filename].append(
-                {
-                    'name': game.get('name'),
-                    'id': game.find('id').text,
-                    'type': game.find('type').text,
-                    'region': game.find('region').text
-                }
-            )
+            game_id = game.findtext('id')
+            name = game.get('name') or ''
+            title = game.findtext(
+                'locale/title') or name.split('(', 1)[0].strip()
+            item = {
+                'id': game_id,
+                'title': title,
+                'type': game.findtext('type'),
+                'region': game.findtext('region'),
+                'search_key': create_search_key(name),
+            }
+            games.append(item)
+            by_id[game_id] = item
+        databases[filename] = {'games': games, 'by_id': by_id}
 
 
-def load_boxart_cache():
-    """Load the boxart URL cache from a JSON file."""
-    global boxart_urls_cache
-    if boxart_urls_cache is None:
-        try:
-            with open(f'{CACHE_DIRNAME}/{BOXART_URLS_CACHE_FILENAME}', 'r') as f:
-                boxart_urls_cache = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            boxart_urls_cache = {}
+def find_best_match(platform, title, regions):
+    """Find the closest GameTDB record for a title and region."""
+    wanted = create_search_key(title)
+    region_key = ','.join(sorted(regions or ()))
+    cache_key = f'{platform}:{wanted}:{region_key}'
+    cached = matches_cacher.get(cache_key)
+    if cached is not None:
+        return json.loads(cached)
+
+    filename = PLATFORM_XML[platform]
+    best = None
+    for game in databases[filename]['games']:
+        if platform != TYPE_PLATFORM[filename].get(game['type'], platform):
+            continue
+        if regions and REGION_MAP.get(game['region']) not in regions:
+            continue
+        if wanted not in game['search_key']:
+            continue
+        if not best or len(game['search_key']) < len(best['search_key']):
+            best = game
+
+    if not best:
+        return {}
+
+    match = {
+        'id': best['id'],
+        'title': best['title'],
+        'region': best['region'],
+    }
+    matches_cacher.cache(
+        cache_key, json.dumps(match, separators=(',', ':')).encode('utf-8'))
+    return match
 
 
-def save_boxart_cache():
-    """Save the boxart URL cache to a JSON file."""
-    with open(f'{CACHE_DIRNAME}/{BOXART_URLS_CACHE_FILENAME}', 'w') as f:
-        json.dump(boxart_urls_cache, f)
-
-
-def cache_boxart_url(platform, id, url):
-    """Cache a boxart URL for a specific platform and game ID."""
-    load_boxart_cache()
-
-    if platform not in boxart_urls_cache:
-        boxart_urls_cache[platform] = {}
-
-    boxart_urls_cache[platform][id] = url
-    save_boxart_cache()
-
-
-def get_cached_boxart_url(platform, id):
-    """Retrieve a cached boxart URL for a specific platform and game ID."""
-    load_boxart_cache()
-
-    if platform not in boxart_urls_cache:
-        return False
-
-    return boxart_urls_cache[platform].get(id, False)
-
-
-def fetch_boxart_url(url):
-    """Check if a boxart URL is valid by sending a HEAD request."""
-    try:
-        response = requests.head(url, allow_redirects=True, timeout=5)
-        if response.status_code == 200:
-            return True
-    except requests.RequestException:
-        return False
-
-
-def build_boxart_url(platform, country, id):
-    """Build and validate a boxart URL for a specific platform, country, and game ID."""
-    boxart_url = get_cached_boxart_url(platform, id)
-    if boxart_url != False:
-        return boxart_url
-
-    file_extension = 'jpg' if platform in (
-        '3ds', 'n3ds', 'wiiu', 'ps3') else 'png'
-
-    base_path = BOXART_URL_PLATFORM_PATHS_MAP[platform]
-
-    # First try with user-given country
-    boxart_url = f'{GAMETDB_ARTWORK_BASE_URL}/{base_path}/{country}/{id}.{file_extension}'
-    if fetch_boxart_url(boxart_url):
-        cache_boxart_url(platform, id, boxart_url)
-        return boxart_url
-
-    # Try with all possible countries
-    for country in GAMETDB_COUNTRIES:
-        boxart_url = f'{GAMETDB_ARTWORK_BASE_URL}/{base_path}/{country}/{id}.{file_extension}'
-        if fetch_boxart_url(boxart_url):
-            cache_boxart_url(platform, id, boxart_url)
-            return boxart_url
-
-    cache_boxart_url(platform, id, None)
-    return None
-
-
-def find_full_id(id, platform):
-    """Retrieve the first game ID that contains a the given ID as a substring"""
-    xml_filename = PLATFORM_XML_MAP[platform]
-    for game in tdbs[xml_filename]:
-        if game['id'].startswith(id):
+def find_full_id(game_id, platform):
+    """Expand a partial GameTDB ID to its full ID."""
+    database = databases[PLATFORM_XML[platform]]
+    if game_id in database['by_id']:
+        return game_id
+    for game in database['games']:
+        if game['id'].startswith(game_id):
             return game['id']
     return None
 
 
-def get_boxart_url_by_id(id, platform):
-    """Retrieve the boxart URL for a game by its ID and platform."""
-    xml_filename = PLATFORM_XML_MAP[platform]
-    region_code_pattern = ID_REGION_CODE_PATTERN_MAP[xml_filename]
-    valid_id_pattern = SERIAL_GAMETDB_ID_PATTERN_MAP[platform]
-
-    match = re.search(valid_id_pattern, id)
+def get_artwork_url(game_id, platform):
+    """Find and cache artwork for a GameTDB ID."""
+    match = re.search(SERIAL_PATTERNS[platform], game_id or '')
     if not match:
         return None
-    valid_id = ''.join(match.groups())
-    full_valid_id = find_full_id(valid_id, platform)
-    if not full_valid_id:
+    full_id = find_full_id(''.join(match.groups()), platform)
+    if not full_id:
         return None
 
-    match = re.match(region_code_pattern, full_valid_id)
-    if not match:
+    filename = PLATFORM_XML[platform]
+    region_match = re.match(REGION_CODE_PATTERNS[filename], full_id)
+    if not region_match:
         return None
-    region_code = match.group(1)
+    country = next((country for pattern, country in REGION_COUNTRIES[filename].items(
+    ) if re.match(pattern, region_match.group(1))), 'EN')
+    cache_key = f'{platform}:{full_id}'
+    cached = artwork_cacher.get(cache_key)
+    if cached is not None:
+        return cached.decode('utf-8') or None
 
-    boxart_url = None
-    for pattern, country in REGION_CODE_COUNTRY_MAP[xml_filename].items():
-        if not re.match(pattern, region_code):
-            continue
+    extension = 'jpg' if platform in ('3ds', 'n3ds', 'wiiu', 'ps3') else 'png'
+    countries = (country,) + \
+        tuple(item for item in COUNTRIES if item != country)
+    for candidate in countries:
+        url = f'{ARTWORK_BASE_URL}/{ARTWORK_PATHS[platform]}/{candidate}/{full_id}.{extension}'
+        try:
+            r = session.head(url, allow_redirects=True, timeout=5)
+            r.raise_for_status()
+            if r.status_code == 200:
+                artwork_cacher.cache(cache_key, url.encode('utf-8'))
+                return url
+        except requests.RequestException:
+            pass
 
-        boxart_url = build_boxart_url(platform, country, full_valid_id)
-        break
-    return boxart_url
+    artwork_cacher.cache(cache_key, b'')
+    return None
 
 
-def parse(entries, flags):
-    """Parse game entries and enrich them with additional data."""
-    if not tdbs:
-        load_tdbs()
+class GameTDBParser:
+    def __init__(self, fallback=('title', 'regions')):
+        """Create a GameTDB parser with fallback fields."""
+        self.fallback = fallback
 
-    parse_boxart = flags.get('parse_boxart', True)
-    parse_name = flags.get('parse_name', False)
-
-    for entry in entries:
-        xml_filename = PLATFORM_XML_MAP[entry['platform']]
-
-        # If a rom ID is set already, parse the box art URL or name directly
-        if entry.get('rom_id'):
-            if parse_boxart:
-                entry['boxart_url'] = get_boxart_url_by_id(
-                    entry['rom_id'], entry['platform'])
-            if parse_name:
-                for game in tdbs[xml_filename]:
-                    if game['id'] != entry['rom_id']:
-                        continue
-
-                    entry['title'] = game['name']
-                    break
-
-            continue
-
-        # We do not have a rom ID, use the logic to find the best matching game in TDB
-
-        # Get a simple to compare value from the entry title
-        title_compare_value = create_search_key(
-            re.sub(r"\(.*", '', entry['title']))
-
-        regions = entry['regions']
-        platform = entry['platform']
-
-        best_match = None
-        best_match_name = None
-
-        for game in tdbs[xml_filename]:
-            # Skip if platform does not match
-            if platform != TYPE_PLATFORM_MAP[xml_filename].get(game['type'], platform):
+    def parse(self, source):
+        """Enrich source entries with GameTDB titles and artwork."""
+        load_databases()
+        for entry in source.entries:
+            platform = entry.platform or source.entry.platform
+            if platform not in PLATFORM_XML:
                 continue
 
-            # Skip if game region does not match any of the entry regions
-            game_region = REGION_REGION_MAP.get(game['region'])
-            if regions and game_region not in regions:
+            game = None
+            if entry.serial:
+                full_id = find_full_id(entry.serial, platform)
+                if full_id:
+                    game = databases[PLATFORM_XML[platform]
+                                     ]['by_id'].get(full_id)
+                    cover_url = get_artwork_url(entry.serial, platform)
+                else:
+                    cover_url = None
+            else:
+                game = find_best_match(platform, entry.title, entry.regions)
+                cover_url = get_artwork_url(
+                    game['id'], platform) if game else None
+
+            if not game:
                 continue
 
-            # Get a simple to compare value from the game name
-            name_compare_value = create_search_key(
-                re.sub(r"\(.*", '', game['name']))
-
-            # Skip if entry title is not a substring of game name
-            if title_compare_value not in name_compare_value:
-                continue
-
-            # Update best match
-            if not best_match_name or len(name_compare_value) < len(best_match_name):
-                best_match = game
-                best_match_name = game['name']
-
-        if best_match:
-            if parse_boxart:
-                entry['boxart_url'] = get_boxart_url_by_id(
-                    best_match['id'], platform)
-            if parse_name:
-                entry['title'] = best_match['name']
-
-    return entries
+            new_entry = Entry(
+                title=game['title'],
+                regions=([REGION_MAP.get(game['region'])]
+                         if game['region'] else None),
+                serial=game['id'],
+                cover_url=cover_url
+            )
+            entry.merge(new_entry, fallback=self.fallback)

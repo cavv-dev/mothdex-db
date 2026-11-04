@@ -1,15 +1,11 @@
-"""
-This module provides functionality for parsing and enriching game metadata 
-from libretro DAT files. It includes platform-specific configurations, 
-functions to load and parse DAT files, and methods to enhance game entries 
-with ROM IDs and box art URLs.
-"""
-import requests
 import re
+import os
+import requests
 from urllib.parse import quote, unquote
-from utils.parse_utils import remove_ext
+from models import Entry
+from utils import remove_ext
+from common import DATA_DIR
 
-# Platform-specific metadata definitions
 PLATFORMS = {
     'nes': {
         'system': 'Nintendo - Nintendo Entertainment System',
@@ -49,7 +45,7 @@ PLATFORMS = {
             'metadat/no-intro/Nintendo - Game Boy Advance.dat'
         ]
     },
-    'min': {
+    'pmin': {
         'system': 'Nintendo - Pokemon Mini',
         'dats': [
             'metadat/no-intro/Nintendo - Pokemon Mini.dat'
@@ -67,7 +63,7 @@ PLATFORMS = {
             'metadat/no-intro/Nintendo - Nintendo 64.dat'
         ]
     },
-    'ndd': {
+    '64dd': {
         'system': 'Nintendo - Nintendo 64DD',
         'dats': [
             'metadat/no-intro/Nintendo - Nintendo 64DD.dat'
@@ -184,7 +180,7 @@ PLATFORMS = {
             'metadat/no-intro/Sega - Game Gear.dat'
         ]
     },
-    'smd': {
+    'md': {
         'system': 'Sega - Mega Drive - Genesis',
         'dats': [
             'metadat/no-intro/Sega - Mega Drive - Genesis.dat'
@@ -217,7 +213,27 @@ PLATFORMS = {
     },
     'mame': {
         'system': 'MAME',
-        'dats': []
+        'dats': [
+            'metadat/mame/MAME.dat'
+        ]
+    },
+    'fbn': {
+        'system': 'FBNeo - Arcade Games',
+        'dats': [
+            'metadat/fbneo-member/FBNeo - Arcade Games.dat'
+        ]
+    },
+    'hbmame': {
+        'system': 'HBMAME',
+        'dats': [
+            'dat/HBMAME.dat'
+        ]
+    },
+    'dos': {
+        'system': 'DOS',
+        'dats': [
+            'dat/DOS.dat'
+        ]
     },
     'a26': {
         'system': 'Atari - 2600',
@@ -312,84 +328,125 @@ PLATFORMS = {
     }
 }
 
-# Global variable to store parsed DATs
-dbs = None
+databases = {}
+session = requests.Session()
 
 
-def load_dbs():
-    """Load and parse the libretro DAT files for each platform."""
-    global dbs
-    dbs = {}
+def normalize_serial(platform, serial):
+    """Transform a serial number for a platform into a more generic format (compatible with GameTDB)."""
+    if not serial:
+        return serial
 
+    if platform == 'ps3':
+        return re.sub(r'^([A-Z]{4})-(\d{5})$', r'\1\2', serial)
+
+    if platform == 'wii':
+        serial = re.sub(r'^RVL-', '', serial)
+        return re.sub(r'^([A-Z0-9]{4})(?:-[^-]+(?:-.*)?|[A-Z0-9]{2})?$', r'\1', serial)
+
+    if platform in ('nds', 'dsi'):
+        return re.sub(r'^(?:NTR|TWL)-', '', serial)
+
+    if platform in ('3ds', 'n3ds'):
+        return re.sub(r'^[^-]+-[^-]+-([A-Z0-9]{4})$', r'\1', serial)
+
+    if platform == 'gc':
+        return re.sub(r'^[^-]+-[^-]+-([^-]+)-.*$', r'\1', serial)
+
+    return serial
+
+
+def load_databases():
+    """Load Libretro DAT files and build lookup maps."""
     for platform, data in PLATFORMS.items():
-        dbs[platform] = {}
+        databases[platform] = {}
 
+        db = []
         for dat_filename in data['dats']:
-            # Open and read the .dat file
-            with open(f'data/libretro/{dat_filename}', encoding='utf-8') as f:
-                lines = f.readlines()
+            with open(os.path.join(DATA_DIR, 'libretro', dat_filename), encoding='utf-8') as f:
+                text = f.read()
 
-            game = None
-            in_rom_section = False
-            for line in lines:
-                line = line.strip()
-                if line.startswith('game ('):
-                    # Start of a new game entry
-                    game = {}
-                    in_rom_section = False
-                elif line.startswith('rom ('):
-                    # Start of a ROM section
-                    in_rom_section = True
-                    if line.endswith(')'):
-                        # End of ROM section
-                        in_rom_section = False
-                elif line == ')':
-                    # End of a game entry
-                    if in_rom_section:
-                        in_rom_section = False
-                    elif game is not None:
-                        # Save game data if both name and serial are present
-                        if 'name' in game and 'serial' in game:
-                            # Do not overwrite if present
-                            if not game['name'] in dbs[platform]:
-                                dbs[platform][game['name']] = game['serial']
-                        game = None
-                elif not in_rom_section:
-                    # Parse game name and serial
-                    if line.startswith('name') and game is not None:
-                        game['name'] = line.split('"', 1)[1].rsplit('"', 1)[0]
-                    elif line.startswith('serial') and game is not None:
-                        game['serial'] = line.split(
-                            '"', 1)[1].rsplit('"', 1)[0]
+            for block in re.findall(r'^game \(\n(.*?)^\)', text, re.S | re.M):
+                name = re.search(r'^\s*name\s+"(.*?)"', block, re.M)
+                serial = re.search(r'^\s*serial\s+"(.*?)"', block, re.M)
+                rom = re.search(r'rom \(\s*name\s+(?:"(.*?)"|(\S+))', block)
+                db.append({
+                    'name': name.group(1) if name else None,
+                    'serial': normalize_serial(platform, serial.group(1)) if serial else None,
+                    'rom_name': remove_ext((rom.group(1) or rom.group(2))) if rom else None,
+                })
+
+        by_name = {}
+        by_serial = {}
+        by_rom_name = {}
+
+        for db_entry in db:
+            by_name.setdefault(db_entry['name'], db_entry)
+            by_rom_name.setdefault(db_entry['rom_name'], db_entry)
+            if db_entry['serial']:
+                by_serial.setdefault(db_entry['serial'], db_entry)
+
+        databases[platform]['by_name'] = by_name
+        databases[platform]['by_serial'] = by_serial
+        databases[platform]['by_rom_name'] = by_rom_name
 
 
-def parse(entries, flags):
-    """Parse a list of entries and enrich them with ROM IDs and box art URLs."""
-    if not dbs:
-        load_dbs()
+class LibretroParser:
+    def __init__(self, fallback=()):
+        """Create a Libretro parser with fallback fields."""
+        self.fallback = fallback
 
-    for entry in entries:
-        # Retrieve the database for the platform
-        db = dbs.get(entry['platform'])
-        entry['rom_id'] = db.get(entry['title'])
+    def parse(self, source):
+        """Enrich source entries with Libretro metadata and artwork."""
+        if not databases:
+            load_databases()
 
-        # Construct the URL for box art thumbnails
-        index_url = f"https://thumbnails.libretro.com/{quote(PLATFORMS[entry['platform']]['system'])}/Named_Boxarts/"
+        for entry in source.entries:
+            db = databases[entry.platform]
+            lookup_serial = normalize_serial(entry.platform, entry.serial)
 
-        # If box art list is not cached, fetch it from the server
-        if not 'available_boxarts' in PLATFORMS[entry['platform']]:
-            PLATFORMS[entry['platform']]['available_boxarts'] = []
-            r = requests.get(index_url)
+            db_entry = (db['by_name'].get(entry.title) or db['by_rom_name'].get(
+                entry.title) or db['by_serial'].get(lookup_serial))
 
-            # Extract box art filenames from the HTML response
-            results = re.findall(
-                r"<tr>.*alt=\"\[IMG\]\".*?href=\"(.*?)\".*?>.*?</tr>", r.text)
-            for result in results:
-                PLATFORMS[entry['platform']]['available_boxarts'].append(
-                    remove_ext(unquote(result)))
+            if not db_entry:
+                continue
 
-        # Add box art URL if available
-        if entry['title'] in PLATFORMS[entry['platform']]['available_boxarts']:
-            entry['boxart_url'] = f"{index_url}{quote(entry['title'])}.png"
+            title = None
+            serial = None
+            cover_url = None
 
-    return entries
+            db_entry_name = db_entry.get('name')
+            db_entry_serial = db_entry.get('serial')
+            db_entry_rom_name = db_entry.get('rom_name')
+
+            serial = db_entry_serial
+
+            if entry.platform in ('mame', 'fbn', 'hbmame'):
+                if not db_entry_serial and entry.title == db_entry_rom_name:
+                    serial = db_entry_rom_name
+                title = db_entry_name
+
+            index_url = f"https://thumbnails.libretro.com/{quote(PLATFORMS[entry.platform]['system'])}/Named_Boxarts/"
+
+            if not 'available_boxarts' in PLATFORMS[entry.platform]:
+                PLATFORMS[entry.platform]['available_boxarts'] = []
+                r = session.get(index_url)
+                if not r.ok:
+                    continue
+                r.raise_for_status()
+
+                results = re.findall(
+                    r'<tr>.*alt="\[IMG\]".*?href="(.*?)".*?>.*?</tr>', r.text)
+                for result in results:
+                    PLATFORMS[entry.platform]['available_boxarts'].append(
+                        remove_ext(unquote(result)))
+
+            if db_entry_name in PLATFORMS[entry.platform]['available_boxarts']:
+                cover_url = f'{index_url}{quote(db_entry_name)}.png'
+
+            new_entry = Entry(
+                title=title,
+                serial=serial,
+                cover_url=cover_url,
+            )
+            entry.merge(new_entry, fallback=self.fallback)
