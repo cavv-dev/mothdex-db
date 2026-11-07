@@ -143,9 +143,8 @@ def move_article(title):
 
 
 def get_clean_title(title):
-    """Remove unwanted groups and return a clean title with extras."""
+    """Remove unwanted groups and return a clean title."""
     clean_title = title
-    extras = []
 
     # Extract all groups of parentheses from the title
     matches = re.findall(r'\((.*?)\)', title)
@@ -165,16 +164,12 @@ def get_clean_title(title):
                 remove_group = False
                 break
         if remove_group:
-            for content in group:
-                content = content.strip()
-                if content not in REGIONS_MAP:
-                    extras.append(content)
             clean_title = remove_groups_with_contents(clean_title, group)
 
     # Normalize repeated spaces and move articles
     clean_title = normalize_repeated_chars(clean_title, ' ')
 
-    return clean_title, extras
+    return clean_title
 
 
 class NoIntroParser:
@@ -186,16 +181,15 @@ class NoIntroParser:
         self.fallback = fallback
 
     def parse(self, source):
-        """Clean source titles and add parsed regions and extras."""
+        """Clean source titles and add parsed regions."""
         for entry in source.entries:
             title = entry.title
             regions = entry.regions
-            extras = []
 
             if self.parse_title_regions:
                 regions = parse_regions(title)
             if self.clean_title_contents:
-                title, extras = get_clean_title(title)
+                title = get_clean_title(title)
             if self.move_title_article:
                 title = move_article(title)
 
@@ -204,6 +198,3 @@ class NoIntroParser:
                 regions=regions
             )
             entry.merge(new_entry, fallback=self.fallback)
-
-            for link in entry.links:
-                link.extras.extend(extras)

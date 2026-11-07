@@ -1,5 +1,6 @@
 import re
-from utils import Cacher, HTTPFetcher
+from unidecode import unidecode
+from utils import Cacher, HTTPFetcher, remove_ext
 
 
 class Link:
@@ -119,6 +120,32 @@ class Entry:
             for field, value in vars(new_entry).items():
                 if value and ((field in fallback and not getattr(self, field)) or field not in fallback):
                     self.update(field, value)
+
+    def generate_links_extras(self):
+        """Populate `extras` field in each link by comparing filenames. Should be done once, when the entry is ready."""
+        tokenized_filenames = []
+        pattern = r'\(([^)]+)\)|\[([^\]]+)\]|\{([^}]+)\}|([^\s\(\)\[\]{}]+)'
+
+        for link in self.links:
+            tokens = []
+            filename = unidecode(remove_ext(link.filename or ''))
+            for match in re.finditer(pattern, filename):
+                group_index = match.lastindex
+                token = match.group(group_index)
+                if group_index == 4 and re.fullmatch(r'[^a-zA-Z0-9]+', token):
+                    continue
+                tokens.append(token)
+            tokenized_filenames.append(tokens)
+
+        common_tokens = set(
+            token.casefold() for token in tokenized_filenames[0]) if tokenized_filenames else set()
+        for tokens in tokenized_filenames[1:]:
+            common_tokens.intersection_update(
+                token.casefold() for token in tokens)
+
+        for link, tokens in zip(self.links, tokenized_filenames):
+            link.extras = [
+                token for token in tokens if token.casefold() not in common_tokens]
 
 
 class Index:

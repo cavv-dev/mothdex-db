@@ -137,6 +137,9 @@ def add_entries():
             cursor = conn.cursor()
             cursor.execute('PRAGMA foreign_keys = ON;')
 
+            for entry in entries_map.values():
+                entry.generate_links_extras()
+
             def entry_rows():
                 for slug, entry in entries_map.items():
                     search_key = create_db_search_key(entry.title)
