@@ -114,6 +114,8 @@ def init_db():
                 'CREATE INDEX idx_regions_entries_entry ON regions_entries (entry);')
             cursor.execute(
                 'CREATE INDEX idx_regions_entries_region ON regions_entries (region);')
+            cursor.execute(
+                'CREATE INDEX idx_regions_entries_region_entry ON regions_entries (region, entry);')
             cursor.execute('CREATE INDEX idx_links_entry ON links (entry);')
             cursor.execute(
                 'CREATE INDEX idx_extras_links_link ON extras_links (link);')
