@@ -145,7 +145,8 @@ class Entry:
 
         for link, tokens in zip(self.links, tokenized_filenames):
             link.extras = [
-                token for token in tokens if token.casefold() not in common_tokens]
+                token for token in tokens
+                if common_tokens and token.casefold() not in common_tokens]
 
 
 class Index:
