@@ -250,14 +250,42 @@ def find_best_match(platform, title, regions):
     return match
 
 
-def find_full_id(game_id, platform):
+def find_full_id(game_id, platform, title=None, regions=None):
     """Expand a partial GameTDB ID to its full ID."""
     database = databases[PLATFORM_XML[platform]]
-    if game_id in database['by_id']:
-        return game_id
-    for game in database['games']:
-        if game['id'].startswith(game_id):
-            return game['id']
+    exact_id = game_id if game_id in database['by_id'] else None
+
+    candidates = [
+        game for game in database['games']
+        if game['id'].startswith(game_id)
+    ]
+
+    if regions:
+        candidates = [
+            game for game in candidates
+            if REGION_MAP.get(game['region']) in regions
+        ]
+
+    if title:
+        wanted = create_search_key(title)
+        exact_title_candidates = [
+            game for game in candidates
+            if game['search_key'] == wanted
+        ]
+        if len(exact_title_candidates) == 1:
+            return exact_title_candidates[0]['id']
+
+        title_candidates = [
+            game for game in candidates
+            if wanted in game['search_key'] or game['search_key'] in wanted
+        ]
+        if len(title_candidates) == 1:
+            return title_candidates[0]['id']
+
+    if exact_id:
+        return exact_id
+    if len(candidates) == 1:
+        return candidates[0]['id']
     return None
 
 
@@ -314,11 +342,12 @@ class GameTDBParser:
 
             game = None
             if entry.serial:
-                full_id = find_full_id(entry.serial, platform)
+                full_id = find_full_id(
+                    entry.serial, platform, entry.title, entry.regions)
                 if full_id:
                     game = databases[PLATFORM_XML[platform]
                                      ]['by_id'].get(full_id)
-                    cover_url = get_artwork_url(entry.serial, platform)
+                    cover_url = get_artwork_url(full_id, platform)
                 else:
                     cover_url = None
             else:
