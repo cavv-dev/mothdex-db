@@ -10,6 +10,7 @@ from parsers.mame import MAMEParser
 from parsers.wii_rom_set_by_ghostware import WiiRomSetByGhostwareParser
 from parsers.wiiu_archiver_2020 import WiiUArchiver2020Parser
 from parsers.igdb import IGDBParser
+from parsers.touhou_project_collection import TouhouProjectCollectionParser
 
 SOURCES = (
     Source(
@@ -2392,6 +2393,26 @@ SOURCES = (
         TorrentParser(),
         IGDBParser()
     ).add_filters(Filter('title', r'^(.*?)(?:\s*\(v[^)]+\)(\s*.*?))?\.zip')),
+
+    Source(
+        Entry(platform='pc'),
+        Link(
+            type='Game',
+            format='exe',
+            source_name='MiNERVA Archive'
+        )
+    ).add_indexes(
+        Index(
+            url='https://minerva-archive.org/assets/Minerva_Myrient_v0.3/Minerva_Myrient%20-%20Touhou%20Project%20Collection.torrent',
+            base_path='Minerva_Myrient/Touhou Project Collection/Official Content/Games',
+            link=Link(
+                source_url='https://minerva-archive.org/browse/Touhou%20Project%20Collection/Official%20Content/Games/')
+        )
+    ).add_parsers(
+        TorrentParser(),
+        TouhouProjectCollectionParser(),
+        IGDBParser()
+    ).add_filters(Filter('title', r'(.*)\.zip')),
 
     Source(
         Entry(platform='mac'),
